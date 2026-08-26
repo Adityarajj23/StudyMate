@@ -1,0 +1,29 @@
+# Environment
+.env
+.venv/
+venv/
+
+# Data (regeneratable)
+data/vector_store/
+data/studymate.db
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Streamlit
+.streamlit/secrets.toml

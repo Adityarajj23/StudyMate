@@ -1,0 +1,8 @@
+[server]
+fileWatcherType = "poll"
+
+[logger]
+level = "error"
+
+[browser]
+gatherUsageStats = false
