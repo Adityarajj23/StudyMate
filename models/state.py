@@ -14,7 +14,7 @@ class StudyMateState(TypedDict):
     subject: str
     collection_name: str
 
-    # Cross-agent memory (injected by orchestrator from SQLite)
+    # Cross-agent memory (injected by orchestrator from MongoDB)
     agent_memories: list[dict]
 
     # Ingest inputs/outputs
