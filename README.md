@@ -324,4 +324,4 @@ StudyMate is a research project exploring whether coordinated, specialized agent
 
 ## License
 
-No license has been specified for this repository yet.
+[MIT LICENSE](LICENSE)
