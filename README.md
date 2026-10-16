@@ -43,7 +43,7 @@ Traditional study planners are static, and generic chatbots do not connect expla
 - Ask course-grounded questions with source and page metadata.
 - Generate and grade topic-focused MCQ quizzes.
 - Track topic performance, mastery levels, quiz history, and plan revisions.
-- Share observations across agents through SQLite memory.
+- Share observations across agents through MongoDB-backed memory.
 - Switch between Gemini, Groq, and local Ollama models.
 - Use the Streamlit UI or call the workflow from Python.
 
@@ -55,7 +55,7 @@ Traditional study planners are static, and generic chatbots do not connect expla
 | LLM providers | Google Gemini, Groq, Ollama |
 | Embeddings | HuggingFace `sentence-transformers/all-MiniLM-L6-v2` |
 | Vector search | ChromaDB |
-| Database | SQLite |
+| Database | MongoDB |
 | PDF ingestion | PyMuPDF |
 | UI | Streamlit |
 | Schemas and settings | Pydantic, `pydantic-settings` |
@@ -136,8 +136,26 @@ The active provider can also be changed from the Streamlit sidebar. Restarting t
 | `GROQ_MODEL` | `llama-3.3-70b-versatile` | Groq model name |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server URL |
 | `OLLAMA_MODEL` | `qwen3:14b` | Local Ollama model |
+| `MONGODB_URI` | `mongodb://localhost:27017` | MongoDB connection string |
+| `MONGODB_DB_NAME` | `studymate` | MongoDB database name used by StudyMate |
 | `HTTP_PROXY` | empty | Optional HTTP/HTTPS proxy |
 | `LOG_LEVEL` | `INFO` | Application log level |
+
+For MongoDB:
+
+```dotenv
+# Local MongoDB
+MONGODB_URI=mongodb://localhost:27017
+MONGODB_DB_NAME=studymate
+```
+
+```dotenv
+# MongoDB Atlas
+MONGODB_URI=mongodb+srv://<user>:<pass>@cluster.mongodb.net/?retryWrites=true&w=majority
+MONGODB_DB_NAME=studymate
+```
+
+Use a URL-encoded username/password in Atlas URIs if credentials contain special characters. If you run MongoDB locally, make sure the MongoDB server is running before starting StudyMate.
 
 For Ollama:
 
@@ -214,7 +232,7 @@ flowchart LR
     O --> E[Evaluator Agent]
     C --> RAG[(ChromaDB RAG)]
     E --> RAG
-    P --> DB[(SQLite)]
+    P --> DB[(MongoDB)]
     C --> DB
     E --> DB
     DB --> P
@@ -236,16 +254,15 @@ For the full node topology, data flow diagrams, and database schema, see [docs/A
 
 ## Data and Persistence
 
-Runtime data is stored locally:
+Runtime data is persisted in two stores:
 
 ```text
 data/
 ├── vector_store/
 │   └── ChromaDB persistent collections
-└── studymate.db
 ```
 
-SQLite stores `students`, `subjects`, `study_plans`, `topic_performance`, `quiz_results`, and `agent_memory`. ChromaDB stores one searchable collection per subject. Sample syllabus files are available in `data/`.
+MongoDB stores StudyMate records in collections such as `students`, `subjects`, `study_plans`, `completed_topics`, `topic_performance`, `quiz_results`, and `agent_memory` in the configured database. ChromaDB stores one searchable collection per subject under `data/vector_store/`. Sample syllabus files are available in `data/`.
 
 Do not commit API keys, private course material, generated databases, or vector-store data unless that is intentional.
 
@@ -287,7 +304,7 @@ StudyMate/
 ├── agents/          # Planner, Content, and Evaluator agents
 ├── chains/          # LCEL chains such as topic extraction
 ├── data/            # Sample documents and runtime vector data
-├── db/              # SQLite access layer
+├── db/              # MongoDB access layer
 ├── docs/            # Architecture and UI walkthrough
 ├── ingestion/       # PDF loading and ChromaDB operations
 ├── models/          # Pydantic schemas and graph state
@@ -320,7 +337,7 @@ StudyMate/
 
 ## Research Context
 
-StudyMate is a research project exploring whether coordinated, specialized agents can provide more adaptive academic planning than a monolithic chatbot. The shared `agent_memory` table is central to that experiment: observations from content interactions and quizzes become context for future planning decisions.
+StudyMate is a research project exploring whether coordinated, specialized agents can provide more adaptive academic planning than a monolithic chatbot. The shared `agent_memory` collection is central to that experiment: observations from content interactions and quizzes become context for future planning decisions.
 
 ## License
 
