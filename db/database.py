@@ -1,132 +1,104 @@
 from __future__ import annotations
 
-import json
-import sqlite3
 import uuid
-from contextlib import contextmanager
 from datetime import datetime
-from pathlib import Path
+from functools import lru_cache
+from typing import Any
 
-_DB_PATH = Path(__file__).resolve().parent.parent / "data" / "studymate.db"
+from pymongo import MongoClient, ASCENDING, DESCENDING
+from pymongo.collection import Collection
+
+from config import get_settings
 
 
-@contextmanager
-def _get_conn():
-    conn = sqlite3.connect(str(_DB_PATH))
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    try:
-        yield conn
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
+# ── Connection ─────────────────────────────────────────────
+
+
+@lru_cache(maxsize=1)
+def _get_client() -> MongoClient:
+    uri = get_settings().mongodb_uri
+    return MongoClient(uri)
+
+
+def _db():
+    return _get_client()[get_settings().mongodb_db_name]
+
+
+def _col(name: str) -> Collection:
+    return _db()[name]
+
+
+# ── Init ───────────────────────────────────────────────────
 
 
 def init_db() -> None:
-    _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with _get_conn() as conn:
-        conn.executescript("""
-            CREATE TABLE IF NOT EXISTS students (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
+    """Create indexes (idempotent — safe to call on every startup)."""
+    # students
+    _col("students").create_index("name", unique=True)
 
-            CREATE TABLE IF NOT EXISTS subjects (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                student_id TEXT REFERENCES students(id),
-                name TEXT NOT NULL,
-                collection_name TEXT NOT NULL,
-                topics TEXT NOT NULL DEFAULT '[]',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(student_id, name)
-            );
+    # subjects
+    _col("subjects").create_index(
+        [("student_id", ASCENDING), ("name", ASCENDING)], unique=True
+    )
 
-            CREATE TABLE IF NOT EXISTS study_plans (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                student_id TEXT REFERENCES students(id),
-                subject_id INTEGER REFERENCES subjects(id),
-                revision INTEGER NOT NULL DEFAULT 1,
-                plan_data TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
+    # study_plans
+    _col("study_plans").create_index(
+        [("student_id", ASCENDING), ("subject_id", ASCENDING), ("revision", DESCENDING)]
+    )
 
-            CREATE TABLE IF NOT EXISTS completed_topics (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                student_id TEXT REFERENCES students(id),
-                subject_id INTEGER REFERENCES subjects(id),
-                topic_name TEXT NOT NULL,
-                completed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(student_id, subject_id, topic_name)
-            );
+    # completed_topics
+    _col("completed_topics").create_index(
+        [("student_id", ASCENDING), ("subject_id", ASCENDING), ("topic_name", ASCENDING)],
+        unique=True,
+    )
 
-            CREATE TABLE IF NOT EXISTS topic_performance (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                student_id TEXT REFERENCES students(id),
-                subject_id INTEGER REFERENCES subjects(id),
-                topic_name TEXT NOT NULL,
-                best_score REAL DEFAULT 0,
-                average_score REAL DEFAULT 0,
-                attempts INTEGER DEFAULT 0,
-                mastery_level TEXT DEFAULT 'not_started',
-                score_history TEXT DEFAULT '[]',
-                last_tested TIMESTAMP,
-                UNIQUE(student_id, subject_id, topic_name)
-            );
+    # topic_performance
+    _col("topic_performance").create_index(
+        [("student_id", ASCENDING), ("subject_id", ASCENDING), ("topic_name", ASCENDING)],
+        unique=True,
+    )
 
-            CREATE TABLE IF NOT EXISTS quiz_results (
-                id TEXT PRIMARY KEY,
-                student_id TEXT REFERENCES students(id),
-                subject_id INTEGER REFERENCES subjects(id),
-                topic TEXT NOT NULL,
-                questions TEXT NOT NULL,
-                student_answers TEXT NOT NULL,
-                score REAL NOT NULL,
-                correct_count INTEGER NOT NULL,
-                total_count INTEGER NOT NULL,
-                weak_areas TEXT DEFAULT '[]',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
+    # quiz_results
+    _col("quiz_results").create_index("quiz_id", unique=True)
+    _col("quiz_results").create_index(
+        [("student_id", ASCENDING), ("subject_id", ASCENDING), ("created_at", DESCENDING)]
+    )
 
-            CREATE TABLE IF NOT EXISTS agent_memory (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                student_id TEXT REFERENCES students(id),
-                subject_id INTEGER REFERENCES subjects(id),
-                agent_name TEXT NOT NULL,
-                memory_type TEXT NOT NULL,
-                content TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-        """)
+    # agent_memory
+    _col("agent_memory").create_index(
+        [("student_id", ASCENDING), ("subject_id", ASCENDING), ("created_at", DESCENDING)]
+    )
+
+
+# ── Helpers ────────────────────────────────────────────────
+
+
+def _strip_id(doc: dict | None) -> dict | None:
+    """Remove MongoDB internal _id before returning to callers."""
+    if doc is None:
+        return None
+    doc.pop("_id", None)
+    return doc
 
 
 # ── Students ──────────────────────────────────────────────
 
 
 def get_or_create_student(name: str) -> str:
-    with _get_conn() as conn:
-        row = conn.execute(
-            "SELECT id FROM students WHERE name = ?", (name,)
-        ).fetchone()
-        if row:
-            return row["id"]
-        student_id = str(uuid.uuid4())
-        conn.execute(
-            "INSERT INTO students (id, name) VALUES (?, ?)",
-            (student_id, name),
-        )
-        return student_id
+    col = _col("students")
+    doc = col.find_one({"name": name})
+    if doc:
+        return doc["id"]
+    student_id = str(uuid.uuid4())
+    col.insert_one(
+        {"id": student_id, "name": name, "created_at": datetime.utcnow().isoformat()}
+    )
+    return student_id
 
 
 def get_student(student_id: str) -> dict | None:
-    with _get_conn() as conn:
-        row = conn.execute(
-            "SELECT * FROM students WHERE id = ?", (student_id,)
-        ).fetchone()
-        return dict(row) if row else None
+    doc = _col("students").find_one({"id": student_id})
+    return _strip_id(doc)
 
 
 # ── Subjects ──────────────────────────────────────────────
@@ -137,94 +109,86 @@ def save_subject(
     name: str,
     collection_name: str,
     topics: list[str],
-) -> int:
-    with _get_conn() as conn:
-        conn.execute(
-            """INSERT INTO subjects (student_id, name, collection_name, topics)
-               VALUES (?, ?, ?, ?)
-               ON CONFLICT(student_id, name) DO UPDATE SET
-                   collection_name = excluded.collection_name,
-                   topics = excluded.topics""",
-            (student_id, name, collection_name, json.dumps(topics)),
-        )
-        row = conn.execute(
-            "SELECT id FROM subjects WHERE student_id = ? AND name = ?",
-            (student_id, name),
-        ).fetchone()
-        return row["id"]
+) -> str:
+    col = _col("subjects")
+    # Generate a stable id on first insert
+    existing = col.find_one({"student_id": student_id, "name": name}, {"id": 1})
+    subject_id = existing["id"] if existing else str(uuid.uuid4())
+    col.update_one(
+        {"student_id": student_id, "name": name},
+        {
+            "$set": {
+                "collection_name": collection_name,
+                "topics": topics,
+            },
+            "$setOnInsert": {
+                "id": subject_id,
+                "student_id": student_id,
+                "name": name,
+                "created_at": datetime.utcnow().isoformat(),
+            },
+        },
+        upsert=True,
+    )
+    return subject_id
 
 
 def get_subjects(student_id: str) -> list[dict]:
-    with _get_conn() as conn:
-        rows = conn.execute(
-            "SELECT * FROM subjects WHERE student_id = ? ORDER BY name",
-            (student_id,),
-        ).fetchall()
-        result = []
-        for row in rows:
-            d = dict(row)
-            d["topics"] = json.loads(d["topics"])
-            result.append(d)
-        return result
+    docs = _col("subjects").find(
+        {"student_id": student_id}, sort=[("name", ASCENDING)]
+    )
+    result = []
+    for doc in docs:
+        d = _strip_id(doc)
+        # Ensure topics is always a list
+        if not isinstance(d.get("topics"), list):
+            d["topics"] = []
+        result.append(d)
+    return result
 
 
 def get_subject(student_id: str, subject_name: str) -> dict | None:
-    with _get_conn() as conn:
-        row = conn.execute(
-            "SELECT * FROM subjects WHERE student_id = ? AND name = ?",
-            (student_id, subject_name),
-        ).fetchone()
-        if not row:
-            return None
-        d = dict(row)
-        d["topics"] = json.loads(d["topics"])
-        return d
+    doc = _col("subjects").find_one({"student_id": student_id, "name": subject_name})
+    if not doc:
+        return None
+    d = _strip_id(doc)
+    if not isinstance(d.get("topics"), list):
+        d["topics"] = []
+    return d
 
 
 # ── Study Plans ───────────────────────────────────────────
 
 
 def save_study_plan(
-    student_id: str, subject_id: int, revision: int, plan_data: dict
-) -> int:
-    with _get_conn() as conn:
-        cursor = conn.execute(
-            """INSERT INTO study_plans (student_id, subject_id, revision, plan_data)
-               VALUES (?, ?, ?, ?)""",
-            (student_id, subject_id, revision, json.dumps(plan_data)),
-        )
-        return cursor.lastrowid
+    student_id: str, subject_id: str, revision: int, plan_data: dict
+) -> str:
+    doc = {
+        "plan_id": str(uuid.uuid4()),
+        "student_id": student_id,
+        "subject_id": subject_id,
+        "revision": revision,
+        "plan_data": plan_data,
+        "created_at": datetime.utcnow().isoformat(),
+    }
+    _col("study_plans").insert_one(doc)
+    return doc["plan_id"]
 
 
-def get_latest_plan(student_id: str, subject_id: int) -> dict | None:
-    with _get_conn() as conn:
-        row = conn.execute(
-            """SELECT * FROM study_plans
-               WHERE student_id = ? AND subject_id = ?
-               ORDER BY revision DESC LIMIT 1""",
-            (student_id, subject_id),
-        ).fetchone()
-        if not row:
-            return None
-        d = dict(row)
-        d["plan_data"] = json.loads(d["plan_data"])
-        return d
+def get_latest_plan(student_id: str, subject_id: str) -> dict | None:
+    doc = _col("study_plans").find_one(
+        {"student_id": student_id, "subject_id": subject_id},
+        sort=[("revision", DESCENDING)],
+    )
+    return _strip_id(doc)
 
 
-def get_plan_history(student_id: str, subject_id: int) -> list[dict]:
-    with _get_conn() as conn:
-        rows = conn.execute(
-            """SELECT * FROM study_plans
-               WHERE student_id = ? AND subject_id = ?
-               ORDER BY revision DESC""",
-            (student_id, subject_id),
-        ).fetchall()
-        result = []
-        for row in rows:
-            d = dict(row)
-            d["plan_data"] = json.loads(d["plan_data"])
-            result.append(d)
-        return result
+def get_plan_history(student_id: str, subject_id: str) -> list[dict]:
+    docs = _col("study_plans").find(
+        {"student_id": student_id, "subject_id": subject_id},
+        sort=[("revision", DESCENDING)],
+    )
+    return [_strip_id(d) for d in docs]
 
 
 # ── Topic Performance ─────────────────────────────────────
@@ -232,72 +196,72 @@ def get_plan_history(student_id: str, subject_id: int) -> list[dict]:
 
 def upsert_topic_performance(
     student_id: str,
-    subject_id: int,
+    subject_id: str,
     topic_name: str,
     new_score: float,
 ) -> dict:
-    with _get_conn() as conn:
-        row = conn.execute(
-            """SELECT * FROM topic_performance
-               WHERE student_id = ? AND subject_id = ? AND topic_name = ?""",
-            (student_id, subject_id, topic_name),
-        ).fetchone()
+    col = _col("topic_performance")
+    doc = col.find_one(
+        {"student_id": student_id, "subject_id": subject_id, "topic_name": topic_name}
+    )
 
-        now = datetime.now().isoformat()
+    now = datetime.utcnow().isoformat()
 
-        if row:
-            history = json.loads(row["score_history"])
-            history.append(new_score)
-            attempts = row["attempts"] + 1
-            best = max(row["best_score"], new_score)
-            avg = sum(history) / len(history)
-            from models.schemas import MasteryLevel
-            level = MasteryLevel.from_score(avg).value
+    from models.schemas import MasteryLevel
 
-            conn.execute(
-                """UPDATE topic_performance SET
-                       best_score = ?, average_score = ?, attempts = ?,
-                       mastery_level = ?, score_history = ?, last_tested = ?
-                   WHERE student_id = ? AND subject_id = ? AND topic_name = ?""",
-                (best, avg, attempts, level, json.dumps(history), now,
-                 student_id, subject_id, topic_name),
-            )
-        else:
-            from models.schemas import MasteryLevel
-            level = MasteryLevel.from_score(new_score).value
-            conn.execute(
-                """INSERT INTO topic_performance
-                       (student_id, subject_id, topic_name, best_score,
-                        average_score, attempts, mastery_level, score_history, last_tested)
-                   VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)""",
-                (student_id, subject_id, topic_name, new_score,
-                 new_score, level, json.dumps([new_score]), now),
-            )
+    if doc:
+        history: list[float] = doc.get("score_history", [])
+        history.append(new_score)
+        attempts = doc.get("attempts", 0) + 1
+        best = max(doc.get("best_score", 0.0), new_score)
+        avg = sum(history) / len(history)
+        level = MasteryLevel.from_score(avg).value
 
-        updated = conn.execute(
-            """SELECT * FROM topic_performance
-               WHERE student_id = ? AND subject_id = ? AND topic_name = ?""",
-            (student_id, subject_id, topic_name),
-        ).fetchone()
-        d = dict(updated)
-        d["score_history"] = json.loads(d["score_history"])
-        return d
+        col.update_one(
+            {"student_id": student_id, "subject_id": subject_id, "topic_name": topic_name},
+            {
+                "$set": {
+                    "best_score": best,
+                    "average_score": avg,
+                    "attempts": attempts,
+                    "mastery_level": level,
+                    "score_history": history,
+                    "last_tested": now,
+                }
+            },
+        )
+    else:
+        level = MasteryLevel.from_score(new_score).value
+        col.update_one(
+            {"student_id": student_id, "subject_id": subject_id, "topic_name": topic_name},
+            {
+                "$setOnInsert": {
+                    "student_id": student_id,
+                    "subject_id": subject_id,
+                    "topic_name": topic_name,
+                    "best_score": new_score,
+                    "average_score": new_score,
+                    "attempts": 1,
+                    "mastery_level": level,
+                    "score_history": [new_score],
+                    "last_tested": now,
+                }
+            },
+            upsert=True,
+        )
+
+    updated = col.find_one(
+        {"student_id": student_id, "subject_id": subject_id, "topic_name": topic_name}
+    )
+    return _strip_id(updated)
 
 
-def get_topic_performance(student_id: str, subject_id: int) -> list[dict]:
-    with _get_conn() as conn:
-        rows = conn.execute(
-            """SELECT * FROM topic_performance
-               WHERE student_id = ? AND subject_id = ?
-               ORDER BY topic_name""",
-            (student_id, subject_id),
-        ).fetchall()
-        result = []
-        for row in rows:
-            d = dict(row)
-            d["score_history"] = json.loads(d["score_history"])
-            result.append(d)
-        return result
+def get_topic_performance(student_id: str, subject_id: str) -> list[dict]:
+    docs = _col("topic_performance").find(
+        {"student_id": student_id, "subject_id": subject_id},
+        sort=[("topic_name", ASCENDING)],
+    )
+    return [_strip_id(d) for d in docs]
 
 
 # ── Quiz Results ──────────────────────────────────────────
@@ -305,7 +269,7 @@ def get_topic_performance(student_id: str, subject_id: int) -> list[dict]:
 
 def save_quiz_result(
     student_id: str,
-    subject_id: int,
+    subject_id: str,
     topic: str,
     questions: list[dict],
     student_answers: list[str],
@@ -315,35 +279,30 @@ def save_quiz_result(
     weak_areas: list[str],
 ) -> str:
     quiz_id = str(uuid.uuid4())
-    with _get_conn() as conn:
-        conn.execute(
-            """INSERT INTO quiz_results
-                   (id, student_id, subject_id, topic, questions, student_answers,
-                    score, correct_count, total_count, weak_areas)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (quiz_id, student_id, subject_id, topic,
-             json.dumps(questions), json.dumps(student_answers),
-             score, correct_count, total_count, json.dumps(weak_areas)),
-        )
+    _col("quiz_results").insert_one(
+        {
+            "quiz_id": quiz_id,
+            "student_id": student_id,
+            "subject_id": subject_id,
+            "topic": topic,
+            "questions": questions,
+            "student_answers": student_answers,
+            "score": score,
+            "correct_count": correct_count,
+            "total_count": total_count,
+            "weak_areas": weak_areas,
+            "created_at": datetime.utcnow().isoformat(),
+        }
+    )
     return quiz_id
 
 
-def get_quiz_history(student_id: str, subject_id: int) -> list[dict]:
-    with _get_conn() as conn:
-        rows = conn.execute(
-            """SELECT * FROM quiz_results
-               WHERE student_id = ? AND subject_id = ?
-               ORDER BY created_at DESC""",
-            (student_id, subject_id),
-        ).fetchall()
-        result = []
-        for row in rows:
-            d = dict(row)
-            d["questions"] = json.loads(d["questions"])
-            d["student_answers"] = json.loads(d["student_answers"])
-            d["weak_areas"] = json.loads(d["weak_areas"])
-            result.append(d)
-        return result
+def get_quiz_history(student_id: str, subject_id: str) -> list[dict]:
+    docs = _col("quiz_results").find(
+        {"student_id": student_id, "subject_id": subject_id},
+        sort=[("created_at", DESCENDING)],
+    )
+    return [_strip_id(d) for d in docs]
 
 
 # ── Agent Memory ──────────────────────────────────────────
@@ -351,75 +310,78 @@ def get_quiz_history(student_id: str, subject_id: int) -> list[dict]:
 
 def add_agent_memory(
     student_id: str,
-    subject_id: int,
+    subject_id: str,
     agent_name: str,
     memory_type: str,
     content: str,
-) -> int:
-    with _get_conn() as conn:
-        cursor = conn.execute(
-            """INSERT INTO agent_memory
-                   (student_id, subject_id, agent_name, memory_type, content)
-               VALUES (?, ?, ?, ?, ?)""",
-            (student_id, subject_id, agent_name, memory_type, content),
-        )
-        return cursor.lastrowid
+) -> str:
+    memory_id = str(uuid.uuid4())
+    _col("agent_memory").insert_one(
+        {
+            "memory_id": memory_id,
+            "student_id": student_id,
+            "subject_id": subject_id,
+            "agent_name": agent_name,
+            "memory_type": memory_type,
+            "content": content,
+            "created_at": datetime.utcnow().isoformat(),
+        }
+    )
+    return memory_id
 
 
 def get_agent_memories(
     student_id: str,
-    subject_id: int,
+    subject_id: str,
     agent_name: str | None = None,
     limit: int = 20,
 ) -> list[dict]:
-    with _get_conn() as conn:
-        if agent_name:
-            rows = conn.execute(
-                """SELECT * FROM agent_memory
-                   WHERE student_id = ? AND subject_id = ? AND agent_name = ?
-                   ORDER BY created_at DESC LIMIT ?""",
-                (student_id, subject_id, agent_name, limit),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                """SELECT * FROM agent_memory
-                   WHERE student_id = ? AND subject_id = ?
-                   ORDER BY created_at DESC LIMIT ?""",
-                (student_id, subject_id, limit),
-            ).fetchall()
-        return [dict(row) for row in rows]
+    query: dict[str, Any] = {"student_id": student_id, "subject_id": subject_id}
+    if agent_name:
+        query["agent_name"] = agent_name
+    docs = (
+        _col("agent_memory")
+        .find(query, sort=[("created_at", DESCENDING)])
+        .limit(limit)
+    )
+    return [_strip_id(d) for d in docs]
 
 
 # ── Completed Topics ──────────────────────────────────────
 
 
-def mark_topic_completed(student_id: str, subject_id: int, topic_name: str) -> None:
-    with _get_conn() as conn:
-        conn.execute(
-            """INSERT INTO completed_topics (student_id, subject_id, topic_name)
-               VALUES (?, ?, ?)
-               ON CONFLICT(student_id, subject_id, topic_name) DO NOTHING""",
-            (student_id, subject_id, topic_name),
-        )
+def mark_topic_completed(student_id: str, subject_id: str, topic_name: str) -> None:
+    _col("completed_topics").update_one(
+        {"student_id": student_id, "subject_id": subject_id, "topic_name": topic_name},
+        {
+            "$setOnInsert": {
+                "student_id": student_id,
+                "subject_id": subject_id,
+                "topic_name": topic_name,
+                "completed_at": datetime.utcnow().isoformat(),
+            }
+        },
+        upsert=True,
+    )
 
 
-def unmark_topics_completed(student_id: str, subject_id: int, topic_names: list[str]) -> None:
+def unmark_topics_completed(
+    student_id: str, subject_id: str, topic_names: list[str]
+) -> None:
     if not topic_names:
         return
-    with _get_conn() as conn:
-        placeholders = ",".join("?" for _ in topic_names)
-        conn.execute(
-            f"""DELETE FROM completed_topics
-                WHERE student_id = ? AND subject_id = ? AND topic_name IN ({placeholders})""",
-            [student_id, subject_id] + topic_names,
-        )
+    _col("completed_topics").delete_many(
+        {
+            "student_id": student_id,
+            "subject_id": subject_id,
+            "topic_name": {"$in": topic_names},
+        }
+    )
 
 
-def get_completed_topics(student_id: str, subject_id: int) -> list[str]:
-    with _get_conn() as conn:
-        rows = conn.execute(
-            """SELECT topic_name FROM completed_topics
-               WHERE student_id = ? AND subject_id = ?""",
-            (student_id, subject_id),
-        ).fetchall()
-        return [row["topic_name"] for row in rows]
+def get_completed_topics(student_id: str, subject_id: str) -> list[str]:
+    docs = _col("completed_topics").find(
+        {"student_id": student_id, "subject_id": subject_id},
+        {"topic_name": 1},
+    )
+    return [d["topic_name"] for d in docs]

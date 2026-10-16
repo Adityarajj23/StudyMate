@@ -5,7 +5,7 @@ venv/
 
 # Data (regeneratable)
 data/vector_store/
-data/studymate.db
+*.db
 
 # Python
 __pycache__/

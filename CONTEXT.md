@@ -17,7 +17,7 @@ The core loop: **Plan → Learn → Test → Replan**
 | Agent framework | LangChain + LangGraph (StateGraph with orchestrator) |
 | Vector store | ChromaDB (persistent, one collection per subject) |
 | Embeddings | HuggingFace `sentence-transformers/all-MiniLM-L6-v2` |
-| Central database | SQLite (student profiles, plans, quiz results, cross-agent memory) |
+| Central database | MongoDB (student profiles, plans, quiz results, cross-agent memory) |
 | LLM providers | Gemini 2.5 Flash, Groq/Llama 3.3 70B, Ollama/Qwen3:14B (all free) |
 | PDF parsing | PyMuPDF |
 | UI | Streamlit (5-tab layout) |
@@ -31,9 +31,9 @@ studymate/
 ├── ingestion/       — PDF loader + ChromaDB vector store
 ├── tools/           — LangChain @tool factory for RAG search
 ├── models/          — State TypedDict + Pydantic schemas
-├── db/              — SQLite access layer
+├── db/              — MongoDB access layer (pymongo)
 ├── ui/              — Streamlit app
-├── data/            — ChromaDB persistent dir + SQLite DB
+├── data/            — ChromaDB persistent dir
 ├── docs/            — Architecture documentation
 ├── config.py        — Settings + build_llm() multi-provider factory
 ├── graph.py         — LangGraph StateGraph with orchestrator + 13 nodes
@@ -53,6 +53,8 @@ pip install -r requirements.txt
 # 3. Configure
 cp .env.example .env
 # Edit .env — set GEMINI_API_KEY (or GROQ_API_KEY, or Ollama)
+# Set MONGODB_URI (default: mongodb://localhost:27017)
+# Or use MongoDB Atlas: mongodb+srv://<user>:<pass>@cluster.mongodb.net/
 
 # 4. Run
 streamlit run ui/app.py
@@ -71,7 +73,7 @@ Orchestrator-based StateGraph with conditional routing:
 ## Key Design Decisions
 
 - **ChromaDB over FAISS**: persistent storage, per-subject collections, metadata filtering
-- **SQLite over JSON files**: queryable, cross-agent shared memory via `agent_memory` table
+- **MongoDB over SQLite**: queryable at scale, Atlas-ready, no file-lock contention under concurrent Streamlit re-runs, cross-agent shared memory via `agent_memory` collection
 - **Orchestrator over Router**: injects cross-agent context, logs decisions, future guardrails hook
 - **Multi-provider LLM**: same `build_llm()` factory pattern as the resume-evaluator project
 
