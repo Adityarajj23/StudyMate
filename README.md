@@ -132,6 +132,7 @@ The active provider can also be changed from the Streamlit sidebar. Restarting t
 | `LLM_PROVIDER` | `auto` | Provider mode |
 | `GEMINI_API_KEY` | empty | Gemini credential |
 | `GEMINI_MODEL` | `gemini-3.5-flash` | Gemini model name |
+| `GEMINI_FALLBACK_MODELS` | `gemini-3.6-flash,gemini-3.5-flash-lite,gemini-3.7-flash` | Comma-separated Gemini fallback models |
 | `GROQ_API_KEY` | empty | Groq credential |
 | `GROQ_MODEL` | `openai/gpt-oss-120b` | Primary Groq model name |
 | `GROQ_FALLBACK_MODELS` | `openai/gpt-oss-120b,qwen/qwen3.8-27b,openai/gpt-oss-20b` | Comma-separated Groq fallback models |
