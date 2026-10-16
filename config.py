@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import os
+import logging
 from functools import lru_cache
 from pydantic_settings import BaseSettings
+
+
+logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
@@ -11,10 +15,16 @@ class Settings(BaseSettings):
     # Google Gemini (free tier)
     gemini_api_key: str = ""
     gemini_model: str = "gemini-3.5-flash"
+    gemini_fallback_models: str = (
+        "gemini-3.6-flash,gemini-3.5-flash-lite,gemini-3.7-flash"
+    )
 
     # Groq (free tier — fastest inference)
     groq_api_key: str = ""
-    groq_model: str = "llama-3.3-70b-versatile"
+    groq_model: str = "openai/gpt-oss-120b"
+    groq_fallback_models: str = (
+        "openai/gpt-oss-120b,qwen/qwen3.8-27b,openai/gpt-oss-20b"
+    )
 
     # Ollama (local — no API key)
     ollama_base_url: str = "http://localhost:11434"
@@ -105,15 +115,25 @@ def build_llm(temperature: float | None = None):
     return ChatGoogleGenerativeAI(**kwargs)
 
 
-def build_llm_with_fallback(temperature: float | None = None):
+def build_groq_llm(model: str, temperature: float | None = None):
+    s = get_settings()
+    from langchain_groq import ChatGroq
+
+    kwargs: dict = {"model": model, "groq_api_key": s.groq_api_key}
+    if temperature is not None:
+        kwargs["temperature"] = temperature
+    return ChatGroq(**kwargs)
+
+
+def _unique_models(primary: str, configured: str) -> list[str]:
+    models = [primary] + [model.strip() for model in configured.split(",")]
+    return list(dict.fromkeys(model for model in models if model))
+
+
+def build_llm_candidates(temperature: float | None = None):
     s = get_settings()
     provider = s.llm_provider.lower().strip()
 
-    # Direct provider mode — no fallback chain
-    if provider in ("gemini", "groq", "ollama"):
-        return build_llm(temperature)
-
-    # Auto mode — fallback chain across Gemini models + Groq
     from langchain_google_genai import ChatGoogleGenerativeAI
 
     def _gemini(model: str):
@@ -122,35 +142,56 @@ def build_llm_with_fallback(temperature: float | None = None):
             kwargs["temperature"] = temperature
         return ChatGoogleGenerativeAI(**kwargs)
 
-    primary = _gemini(s.gemini_model)
+    if provider == "groq":
+        if not s.groq_api_key:
+            raise ValueError("GROQ_API_KEY is required when LLM_PROVIDER=groq")
+        return [
+            build_groq_llm(model, temperature)
+            for model in _unique_models(s.groq_model, s.groq_fallback_models)
+        ]
 
-    fallbacks = []
-    _ALT_GEMINI = ["gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.7-flash"]
-    for alt in _ALT_GEMINI:
-        if alt != s.gemini_model:
-            fallbacks.append(_gemini(alt))
+    if provider == "ollama":
+        return [build_llm(temperature)]
 
-    if s.groq_api_key:
-        from langchain_groq import ChatGroq
-        groq_kwargs: dict = {"model": s.groq_model, "groq_api_key": s.groq_api_key}
-        if temperature is not None:
-            groq_kwargs["temperature"] = temperature
-        fallbacks.append(ChatGroq(**groq_kwargs))
+    gemini_models = [
+        _gemini(model)
+        for model in _unique_models(s.gemini_model, s.gemini_fallback_models)
+    ]
+    if provider == "gemini":
+        return gemini_models
 
-    if fallbacks:
-        return primary.with_fallbacks(fallbacks)
-    return primary
+    if provider == "auto":
+        groq_models = []
+        if s.groq_api_key:
+            groq_models = [
+                build_groq_llm(model, temperature)
+                for model in _unique_models(s.groq_model, s.groq_fallback_models)
+            ]
+        logger.info(
+            "LLM auto mode configured: gemini_fallbacks=%s, groq_fallbacks=%s",
+            ", ".join(_unique_models(s.gemini_model, s.gemini_fallback_models)),
+            ", ".join(_unique_models(s.groq_model, s.groq_fallback_models))
+            if s.groq_api_key else "none",
+        )
+        return gemini_models + groq_models
+
+    return gemini_models
+
+
+def build_llm_with_fallback(temperature: float | None = None):
+    candidates = build_llm_candidates(temperature)
+    primary, *fallbacks = candidates
+    return primary.with_fallbacks(fallbacks) if fallbacks else primary
 
 
 def get_provider_label() -> str:
-    s = get_settings()
-    provider = s.llm_provider.lower().strip()
+    provider = get_settings().llm_provider.lower().strip()
     if provider == "auto":
-        return f"Auto ({s.gemini_model} + fallbacks)"
+        return "Auto (Gemini + Groq fallbacks)"
     if provider == "gemini":
-        return f"{s.gemini_model} (direct)"
+        return "Gemini (with fallbacks)"
     if provider == "groq":
-        return f"{s.groq_model} (direct)"
+        return "Groq (with fallbacks)"
     if provider == "ollama":
-        return f"{s.ollama_model} (local)"
-    return f"Auto ({s.gemini_model} + fallbacks)"
+        return "Ollama (local)"
+    return "Auto (Gemini + Groq fallbacks)"

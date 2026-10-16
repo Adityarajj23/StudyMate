@@ -78,6 +78,13 @@ st.markdown("""
 _PAGES = ["Upload Syllabus", "Study Plan", "Ask Doubts", "Take Quiz", "Performance"]
 
 
+def _short_topic_label(topic: str, max_tokens: int = 4) -> str:
+    words = topic.split()
+    if len(words) <= max_tokens:
+        return topic
+    return " ".join(words[:max_tokens]) + "..."
+
+
 def switch_page(page_name: str):
     try:
         st.query_params["page"] = page_name
@@ -114,9 +121,9 @@ with st.sidebar:
     s = get_settings()
     _PROVIDERS = {
         "Auto (Recommended)": "auto",
-        f"Gemini ({s.gemini_model})": "gemini",
-        f"Groq ({s.groq_model})": "groq",
-        f"Ollama ({s.ollama_model})": "ollama",
+        "Gemini": "gemini",
+        "Groq": "groq",
+        "Ollama": "ollama",
     }
     current_provider = s.llm_provider.lower().strip()
     provider_values = list(_PROVIDERS.values())
@@ -394,13 +401,17 @@ elif active == "Take Quiz":
             if st.button("Generate Quiz", type="primary"):
                 from main import run_generate_quiz
 
-                with st.spinner(f"Generating {num_q} questions on '{quiz_topic}'..."):
-                    questions = run_generate_quiz(
-                        topic=quiz_topic,
-                        student_id=student_id,
-                        subject=selected_subject,
-                        num_questions=num_q,
-                    )
+                try:
+                    with st.spinner(f"Generating {num_q} questions on '{quiz_topic}'..."):
+                        questions = run_generate_quiz(
+                            topic=quiz_topic,
+                            student_id=student_id,
+                            subject=selected_subject,
+                            num_questions=num_q,
+                        )
+                except RuntimeError as exc:
+                    st.error(str(exc))
+                    questions = []
 
                 if questions:
                     st.session_state.current_quiz = questions
@@ -542,7 +553,52 @@ elif active == "Performance":
                     for p in all_perf
                 ])
 
-                st.bar_chart(perf_df.set_index("Topic")[["Avg Score", "Best Score"]])
+                chart_df = perf_df[["Topic", "Avg Score", "Best Score"]].melt(
+                    id_vars=["Topic"],
+                    var_name="Metric",
+                    value_name="Score",
+                )
+                chart_df["Topic Label"] = chart_df["Topic"].map(_short_topic_label)
+                chart_spec = {
+                    "mark": "bar",
+                    "encoding": {
+                        "y": {
+                            "field": "Topic Label",
+                            "type": "nominal",
+                            "sort": list(perf_df["Topic"].map(_short_topic_label)),
+                            "title": None,
+                            "axis": {
+                                "labelOverlap": False,
+                                "labelLimit": 260,
+                                "labelPadding": 8,
+                            },
+                        },
+                        "x": {
+                            "field": "Score",
+                            "type": "quantitative",
+                            "scale": {"domain": [0, 100]},
+                            "title": "Score (%)",
+                        },
+                        "color": {
+                            "field": "Metric",
+                            "type": "nominal",
+                            "title": None,
+                            "legend": {
+                                "orient": "top",
+                                "direction": "horizontal",
+                                "columns": 2,
+                                "labelLimit": 120,
+                            },
+                        },
+                        "tooltip": [
+                            {"field": "Topic", "type": "nominal", "title": "Full topic"},
+                            {"field": "Metric", "type": "nominal"},
+                            {"field": "Score", "type": "quantitative", "format": ".1f"},
+                        ],
+                    },
+                    "height": max(300, len(perf_df) * 68),
+                }
+                st.vega_lite_chart(chart_df, chart_spec, use_container_width=True)
                 st.dataframe(perf_df, use_container_width=True, hide_index=True)
             else:
                 st.divider()
@@ -554,15 +610,53 @@ elif active == "Performance":
                 st.divider()
                 st.subheader("Quiz Score Trend")
                 trend_df = pd.DataFrame([
-                    {"Quiz": f"#{i+1} ({q['topic']})", "Score": q["score"]}
+                    {
+                        "Quiz": f"#{i+1}",
+                        "Quiz Number": i + 1,
+                        "Topic": q["topic"],
+                        "Score": q["score"],
+                    }
                     for i, q in enumerate(reversed(quiz_history))
                 ])
-                st.line_chart(trend_df.set_index("Quiz"))
+                trend_spec = {
+                    "mark": {"type": "line", "point": True},
+                    "encoding": {
+                        "x": {
+                            "field": "Quiz",
+                            "type": "ordinal",
+                            "sort": list(trend_df["Quiz"]),
+                            "title": "Quiz attempt",
+                            "axis": {
+                                "labelAngle": 0,
+                                "labelOverlap": False,
+                            },
+                        },
+                        "y": {
+                            "field": "Score",
+                            "type": "quantitative",
+                            "scale": {"domain": [0, 100]},
+                            "title": "Score (%)",
+                        },
+                        "tooltip": [
+                            {"field": "Quiz", "type": "nominal"},
+                            {"field": "Topic", "type": "nominal", "title": "Full topic"},
+                            {"field": "Score", "type": "quantitative", "format": ".1f"},
+                        ],
+                    },
+                    "height": 280,
+                }
+                st.vega_lite_chart(trend_df, trend_spec, use_container_width=True)
 
             st.divider()
-            memories = get_agent_memories(student_id, subject_id_db, limit=10)
+            observation_limit = 10
+            memories = get_agent_memories(
+                student_id,
+                subject_id_db,
+                limit=observation_limit,
+            )
             if memories:
                 st.subheader("Agent Observations")
+                st.caption(f"Showing the latest {observation_limit} observations")
                 for m in memories:
                     agent_colors = {"content": "blue", "evaluator": "orange", "planner": "green", "orchestrator": "gray"}
                     color = agent_colors.get(m["agent_name"], "gray")

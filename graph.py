@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -25,11 +26,16 @@ from db.database import (
 from ingestion.pdf_loader import extract_full_text, load_pdf
 from ingestion.vector_store import (
     create_or_update_collection,
+    collection_exists,
     sanitize_collection_name,
     search_collection,
 )
 from models.state import StudyMateState
 from tools.rag_search_tool import create_rag_search_tool
+from config import build_llm_candidates
+
+
+logger = logging.getLogger(__name__)
 
 
 def _extract_text(content) -> str:
@@ -239,31 +245,94 @@ def run_generate_quiz(state: StudyMateState, config: RunnableConfig) -> dict:
         subj = get_subject(state["student_id"], state["subject"])
         collection_name = subj["collection_name"] if subj else ""
 
+    if not collection_name or not collection_exists(collection_name):
+        raise RuntimeError(
+            f"Course-material index '{collection_name or state['subject']}' is missing. "
+            "Re-upload the syllabus for this subject before generating a quiz."
+        )
+
+    retrieved_docs = search_collection(collection_name, topic, k=4)
+    if not retrieved_docs:
+        raise RuntimeError(
+            f"No course-material content was found for '{topic}'. "
+            "Choose a topic covered by the uploaded syllabus."
+        )
+
+    rag_context = "\n\n".join(
+        f"[{index}] (source: {doc.metadata.get('source', 'unknown')}, "
+        f"page: {doc.metadata.get('page', '?')})\n{doc.page_content}"
+        for index, doc in enumerate(retrieved_docs, start=1)
+    )
     message = (
         f"Generate {num_questions} MCQ questions on the topic: '{topic}'.\n"
-        f"Subject: {state['subject']}\n"
-        f"Use the rag_search tool to find relevant content from the course material "
-        f"to create accurate, syllabus-aligned questions."
+        f"Subject: {state['subject']}\n\n"
+        "Use ONLY the retrieved course-material excerpts below. "
+        "Do not use general knowledge or invent facts. If the excerpts do not "
+        "support a question, do not ask that question.\n\n"
+        f"Retrieved course material:\n{rag_context}"
     )
 
-    tools = [create_rag_search_tool(collection_name)] if collection_name else []
-    agent = create_evaluator_agent(tools=tools)
-    result = agent.invoke(
-        {"messages": [{"role": "user", "content": message}]},
-        config=config,
-    )
-    raw = _extract_text(result["messages"][-1].content)
+    # Retrieval is performed before the provider call, so every provider is
+    # grounded even if its agent chooses not to call the optional tool.
+    tools = []
+    agents = [
+        create_evaluator_agent(tools=tools, llm=llm)
+        for llm in build_llm_candidates(temperature=0.2)
+    ]
 
-    try:
-        cleaned = raw.strip()
-        if cleaned.startswith("```"):
-            cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned[3:]
-            cleaned = cleaned.rsplit("```", 1)[0]
-        questions = json.loads(cleaned)
-    except (json.JSONDecodeError, IndexError):
-        questions = []
+    last_error: Exception | None = None
+    for attempt, agent in enumerate(agents):
+        try:
+            result = agent.invoke(
+                {"messages": [{"role": "user", "content": message}]},
+                config=config,
+            )
+            raw = _extract_text(result["messages"][-1].content)
+            cleaned = raw.strip()
+            if cleaned.startswith("```"):
+                cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned[3:]
+                cleaned = cleaned.rsplit("```", 1)[0]
+            questions = json.loads(cleaned)
+            if not isinstance(questions, list) or len(questions) != num_questions:
+                raise ValueError(
+                    f"expected {num_questions} questions, got "
+                    f"{len(questions) if isinstance(questions, list) else 'non-list'}"
+                )
+            required_fields = {
+                "question", "options", "correct_answer", "explanation", "topic"
+            }
+            for index, question in enumerate(questions, start=1):
+                if not isinstance(question, dict) or not required_fields.issubset(question):
+                    raise ValueError(f"question {index} is missing required fields")
+                if not isinstance(question["options"], list) or len(question["options"]) != 4:
+                    raise ValueError(f"question {index} must have exactly four options")
+            return {"quiz_questions": questions}
+        except (json.JSONDecodeError, IndexError, TypeError, ValueError) as exc:
+            last_error = exc
+            logger.warning(
+                "Quiz output invalid on attempt %s for subject=%s topic=%s "
+                "questions=%s; trying next fallback: %s",
+                attempt + 1,
+                state["subject"],
+                topic,
+                num_questions,
+                exc,
+            )
+        except Exception as exc:
+            last_error = exc
+            logger.exception(
+                "Quiz generation LLM call failed on attempt %s for subject=%s "
+                "topic=%s questions=%s",
+                attempt + 1,
+                state["subject"],
+                topic,
+                num_questions,
+            )
 
-    return {"quiz_questions": questions}
+    detail = f"{type(last_error).__name__}: {last_error}" if last_error else "unknown error"
+    raise RuntimeError(
+        f"All quiz-generation LLM fallbacks failed. Last error: {detail}"
+    ) from last_error
 
 
 def run_grade_quiz(state: StudyMateState, config: RunnableConfig) -> dict:

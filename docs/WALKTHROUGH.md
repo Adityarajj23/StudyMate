@@ -239,8 +239,10 @@ Track your progress across all quizzes and topics.
 | 8/12 | 72% | 6 | 3 |
 
 ### Charts:
-- **Bar chart**: Topic-wise scores (average + best) — instantly see which topics need work
-- **Line chart**: Score trend over time — track improvement across quizzes
+- **Horizontal bar chart**: Topic-wise scores (average + best), with shortened axis labels
+  for readability. Hover over a bar to see the complete topic name.
+- **Line chart**: Score trend over time — track improvement across quizzes. Hover over
+  a point to see the complete topic name for that attempt.
 
 ### Detailed Table:
 | Topic | Best Score | Avg Score | Attempts | Mastery |
@@ -250,6 +252,10 @@ Track your progress across all quizzes and topics.
 | Stacks | 70% | 70% | 1 | Proficient |
 
 **Mastery levels:** Not Started → Needs Work (<40%) → Developing (40-59%) → Proficient (60-79%) → Mastered (80%+)
+
+The chart displays one topic row per unique assessed topic. If a topic is quizzed
+multiple times, its attempts are combined into the same row and the chart shows
+its average and best score.
 
 ### Agent Observations (expandable):
 Shows what the agents have noted about your learning:

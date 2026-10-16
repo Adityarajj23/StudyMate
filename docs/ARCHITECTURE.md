@@ -271,9 +271,19 @@ All agents and chains use `build_llm()` from `config.py`, which reads `LLM_PROVI
 
 | Provider | Model | Free Tier | Best For |
 |----------|-------|-----------|----------|
-| Gemini | `gemini-2.5-flash` | 15 RPM | Primary — best free model |
-| Groq | `llama-3.3-70b-versatile` | 30 RPM | Fastest inference |
+| Gemini | Configured by `GEMINI_MODEL` | Account-specific | Primary when `LLM_PROVIDER=auto` |
+| Groq | `openai/gpt-oss-120b` and configured fallbacks | Account-specific | Cross-provider fallback |
 | Ollama | `qwen3:14b` | Unlimited | Offline / local development |
+
+In `gemini` mode, the configured Gemini model is attempted first, followed by
+`GEMINI_FALLBACK_MODELS`. In `groq` mode, the configured Groq model is attempted
+first, followed by `GROQ_FALLBACK_MODELS`. In `auto` mode, the configured Gemini
+chain is attempted first, followed by the configured Groq chain. If a model raises an API,
+agent, or output-validation error, the configured Groq models are attempted in order
+from `GROQ_MODEL` followed by `GROQ_FALLBACK_MODELS`. Malformed quiz JSON is treated
+as an error so it can activate the fallback chain instead of silently producing an
+empty quiz. Exact Groq free-tier limits are organization-specific; model IDs should
+be checked against the account's `/openai/v1/models` endpoint.
 
 Switching providers requires no code changes — just update `LLM_PROVIDER` in `.env` or use the Streamlit sidebar dropdown.
 

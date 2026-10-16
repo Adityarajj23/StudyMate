@@ -61,8 +61,9 @@ Return as JSON:
 IMPORTANT: Return ONLY the JSON. No additional text before or after."""
 
 
-def create_evaluator_agent(tools: list):
-    llm = build_llm_with_fallback(temperature=0.2)
+def create_evaluator_agent(tools: list, llm=None):
+    if llm is None:
+        llm = build_llm_with_fallback(temperature=0.2)
     return create_react_agent(
         model=llm,
         tools=tools,

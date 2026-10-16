@@ -118,9 +118,9 @@ Set `LLM_PROVIDER` to one of these values:
 
 | Value | Behavior | Credentials |
 | --- | --- | --- |
-| `auto` | Gemini primary with alternate Gemini models and Groq fallback when configured | Gemini key; Groq key optional |
-| `gemini` | Gemini direct mode, no fallback chain | `GEMINI_API_KEY` |
-| `groq` | Groq direct mode, no fallback chain | `GROQ_API_KEY` |
+| `auto` | Gemini fallback models followed by Groq fallback models | Gemini key; Groq key optional |
+| `gemini` | Gemini model followed by configured Gemini fallback models | `GEMINI_API_KEY` |
+| `groq` | Groq model followed by configured Groq fallback models | `GROQ_API_KEY` |
 | `ollama` | Local model through Ollama | No API key |
 
 The active provider can also be changed from the Streamlit sidebar. Restarting the app is recommended after changing `.env`.
@@ -133,7 +133,8 @@ The active provider can also be changed from the Streamlit sidebar. Restarting t
 | `GEMINI_API_KEY` | empty | Gemini credential |
 | `GEMINI_MODEL` | `gemini-3.5-flash` | Gemini model name |
 | `GROQ_API_KEY` | empty | Groq credential |
-| `GROQ_MODEL` | `llama-3.3-70b-versatile` | Groq model name |
+| `GROQ_MODEL` | `openai/gpt-oss-120b` | Primary Groq model name |
+| `GROQ_FALLBACK_MODELS` | `openai/gpt-oss-120b,qwen/qwen3.8-27b,openai/gpt-oss-20b` | Comma-separated Groq fallback models |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server URL |
 | `OLLAMA_MODEL` | `qwen3:14b` | Local Ollama model |
 | `MONGODB_URI` | `mongodb://localhost:27017` | MongoDB connection string |
@@ -210,7 +211,14 @@ After grading, StudyMate checks topic averages. If any topic is below 60%, the P
 
 ### 6. Performance
 
-The dashboard presents topic mastery, average scores, quiz count, score trends, plan revision, and cross-agent observations.
+The dashboard presents topic mastery, average scores, quiz count, score trends, plan revision, and cross-agent observations. It displays only the latest 10 observations for readability; every observation remains stored in MongoDB for agent context and history.
+
+The topic-performance chart uses horizontal bars so topic labels remain readable.
+Long labels are shortened only on the axis; hover over a bar or quiz-trend point
+to see the full topic name. The detailed table below the chart always shows the
+complete names. The chart's two series are `Avg Score` and `Best Score`; repeated
+quizzes for the same topic are aggregated into that topic's attempts, average,
+and best score.
 
 Mastery levels are calculated as:
 
@@ -322,7 +330,8 @@ StudyMate/
 | Symptom | Resolution |
 | --- | --- |
 | No course material is available | Upload a PDF in **Upload Syllabus** before asking questions or generating quizzes. |
-| Gemini rate limit or `429` | Use `LLM_PROVIDER=auto` with `GROQ_API_KEY` configured, or switch to Groq/Ollama. |
+| Gemini rate limit or `429` | Use `LLM_PROVIDER=auto` with `GROQ_API_KEY` configured. Auto mode tries the configured Groq models after Gemini. |
+| Groq model not found (`404`) | Set `GROQ_MODEL` and `GROQ_FALLBACK_MODELS` to model IDs returned by `https://api.groq.com/openai/v1/models`. |
 | Ollama does not connect | Run `ollama serve`, verify `ollama list`, and check `OLLAMA_BASE_URL`. |
 | Quiz generation returns no questions | Choose a topic present in the uploaded material or upload a richer PDF. |
 | Embedding initialization is slow | The model downloads on first use; later runs use the local cache. |
